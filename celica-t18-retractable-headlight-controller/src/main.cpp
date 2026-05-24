@@ -13,19 +13,25 @@ const int PIN_OUT_RIGHT_COMMON = 5;  // Car Pin 5
 const int PIN_OUT_LEFT_COMMON = 12;  // Car Pin 2
 
 // --- MOTOR POWER PINS ---
-const int PIN_MOTOR_RIGHT = 10;  
-const int PIN_MOTOR_LEFT = 11;   
+const int PIN_MOTOR_RIGHT = 10;  // PWM Capable Pin
+const int PIN_MOTOR_LEFT = 11;   // PWM Capable Pin
+
+// --- PWM SOFT-BRAKE TUNING ---
+// Adjust these two numbers to tune the Left Motor!
+const unsigned long LEFT_FULL_POWER_MS = 500;  // How many milliseconds to run at 100% speed
+const int LEFT_CRAWL_SPEED = 140;              // The brake speed (0-255). 
+
+// The Right motor is perfect, so we just tell it to run at 255 (100%) forever.
+const unsigned long RIGHT_FULL_POWER_MS = 5000; 
+const int RIGHT_CRAWL_SPEED = 255;              
 
 // --- STATE VARIABLES ---
 int leftRawState = 2;   
 int rightRawState = 2;  
 
-// VIRTUAL MEMORY (The Anti-Coasting Lock)
-// 0 = Parked Down, 1 = Parked Up, 2 = Lost/Moving
 int leftVirtualPos = 2; 
 int rightVirtualPos = 2;
 
-// --- SWITCH DEBOUNCE & TRACKING ---
 bool lastStableWantUp = false;
 bool currentSwitchRead = false;
 unsigned long switchDebounceTime = 0;
@@ -61,18 +67,16 @@ void setup() {
   int latchLog = !digitalRead(PIN_IN_LATCH);
   
   if (stalkLog == 0) lastStableWantUp = true;
-  else lastStableWantUp = false; // Default closed on boot if in middle or off
+  else lastStableWantUp = false; 
 
   targetState = lastStableWantUp ? 1 : 0;
   currentSwitchRead = lastStableWantUp;
 
   updateIndependentSensorStates();
   
-  // Set virtual position to whatever the sensors currently see
   leftVirtualPos = leftRawState;
   rightVirtualPos = rightRawState;
 
-  // Self-heal if out of sync on boot
   if (leftVirtualPos != targetState) {
     moveLeftAuth = true;
     leftStartTime = millis();
@@ -90,24 +94,23 @@ void loop() {
 
   bool rawWantUp;
   if (stalkLog == 0) {
-    rawWantUp = true; // HEAD forces OPEN
+    rawWantUp = true; 
   } else if (latchLog == 0) {
-    rawWantUp = lastStableWantUp; // LATCH "keeps" whatever state we were just in
+    rawWantUp = lastStableWantUp; 
   } else {
-    rawWantUp = false; // OFF forces CLOSED
+    rawWantUp = false; 
   }
 
-  // 2. SWITCH DEBOUNCE (Filters out mechanical stalk bounce)
+  // 2. SWITCH DEBOUNCE
   if (rawWantUp != currentSwitchRead) {
     switchDebounceTime = millis();
     currentSwitchRead = rawWantUp;
   }
 
-  if ((millis() - switchDebounceTime) > 50) { // Switch must settle for 50ms
+  if ((millis() - switchDebounceTime) > 50) { 
     if (currentSwitchRead != lastStableWantUp) {
       targetState = currentSwitchRead ? 1 : 0;
       
-      // Grant permission ONLY if the virtual parked position doesn't match the target
       if (leftVirtualPos != targetState) {
         moveLeftAuth = true;
         leftJammed = false;
@@ -128,16 +131,23 @@ void loop() {
     updateIndependentSensorStates();
   }
 
-  // 4. LEFT MOTOR EXECUTION
+  // 4. LEFT MOTOR EXECUTION (WITH SOFT BRAKE)
   if (moveLeftAuth && !leftJammed) {
-    digitalWrite(PIN_MOTOR_LEFT, HIGH);
+    unsigned long currentMoveTime = millis() - leftStartTime;
+    
+    // Check if it's time to deploy the parachute
+    if (currentMoveTime < LEFT_FULL_POWER_MS) {
+      analogWrite(PIN_MOTOR_LEFT, 255); // 100% Speed
+    } else {
+      analogWrite(PIN_MOTOR_LEFT, LEFT_CRAWL_SPEED); // Hit the brakes
+    }
 
     if (leftRawState == targetState) {
       digitalWrite(PIN_MOTOR_LEFT, LOW); 
       moveLeftAuth = false;              
-      leftVirtualPos = targetState; // LOCK VIRTUAL POSITION (Ignores coasting completely)
+      leftVirtualPos = targetState; 
     } 
-    else if (millis() - leftStartTime > 3000) {
+    else if (currentMoveTime > 3000) {
       digitalWrite(PIN_MOTOR_LEFT, LOW);
       moveLeftAuth = false;
       leftJammed = true;
@@ -146,16 +156,22 @@ void loop() {
     digitalWrite(PIN_MOTOR_LEFT, LOW); 
   }
 
-  // 5. RIGHT MOTOR EXECUTION
+  // 5. RIGHT MOTOR EXECUTION (WITH SOFT BRAKE)
   if (moveRightAuth && !rightJammed) {
-    digitalWrite(PIN_MOTOR_RIGHT, HIGH);
+    unsigned long currentMoveTime = millis() - rightStartTime;
+    
+    if (currentMoveTime < RIGHT_FULL_POWER_MS) {
+      analogWrite(PIN_MOTOR_RIGHT, 255);
+    } else {
+      analogWrite(PIN_MOTOR_RIGHT, RIGHT_CRAWL_SPEED);
+    }
 
     if (rightRawState == targetState) {
       digitalWrite(PIN_MOTOR_RIGHT, LOW); 
       moveRightAuth = false;               
-      rightVirtualPos = targetState; // LOCK VIRTUAL POSITION (Ignores coasting completely)
+      rightVirtualPos = targetState; 
     } 
-    else if (millis() - rightStartTime > 3000) {
+    else if (currentMoveTime > 3000) {
       digitalWrite(PIN_MOTOR_RIGHT, LOW);
       moveRightAuth = false;
       rightJammed = true;
@@ -169,7 +185,6 @@ void loop() {
 // THE MULTIPLEXER LOGIC
 // ---------------------------------------------------------
 void updateIndependentSensorStates() {
-  
   digitalWrite(PIN_OUT_RIGHT_COMMON, LOW);  
   digitalWrite(PIN_OUT_LEFT_COMMON, HIGH);  
   delay(5); 
